@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 BTC ML Trading System - Colab Version
-完整的交易模型訓練和預測系統 - 支持實際 CSV 數據
+完整的交易模型訓練和預測系統 - 從 Hugging Face 直接加載數據
 步驟 1：安裝依賴
 步驟 2：運行此 Python 文件
 """
@@ -30,8 +30,10 @@ print("="*60 + "\n")
 # Install dependencies
 print("⬼ 安裝依賴...")
 subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", 
-                       "pandas", "numpy", "scikit-learn", "matplotlib"])
+                       "pandas", "numpy", "scikit-learn", "matplotlib", "pyarrow", "huggingface_hub"])
 print("✓ 依賴安裝完成\n")
+
+from huggingface_hub import hf_hub_download
 
 # Technical Indicators
 class TechnicalIndicators:
@@ -91,47 +93,60 @@ class MLDataHandler:
         self.scaler_features = StandardScaler()
         self.indicators = TechnicalIndicators()
     
-    def load_csv_data(self, csv_path):
-        """從 CSV 加載實際交易數據"""
+    def load_from_huggingface(self):
+        """從 Hugging Face 下載 parquet 文件"""
         try:
-            df = pd.read_csv(csv_path)
+            print("⬼ 從 Hugging Face 下載 BTC 數據...")
+            # 下載文件
+            parquet_file = hf_hub_download(
+                repo_id="zongowo111/v2-crypto-ohlcv-data",
+                filename="klines/BTCUSDT/BTC_15m.parquet",
+                repo_type="dataset",
+                cache_dir="./hf_cache"
+            )
             
-            # 自動檢測列名
+            # 讀取 parquet
+            df = pd.read_parquet(parquet_file)
+            
+            # 檢查並重命名列
             col_mapping = {}
             for col in df.columns:
                 col_lower = col.lower().strip()
-                if 'time' in col_lower or 'date' in col_lower:
-                    col_mapping['timestamp'] = col
+                if 'time' in col_lower or 'date' in col_lower or col_lower == 'timestamp':
+                    col_mapping[col] = 'timestamp'
                 elif col_lower in ['open', 'o']:
-                    col_mapping['open'] = col
+                    col_mapping[col] = 'open'
                 elif col_lower in ['high', 'h']:
-                    col_mapping['high'] = col
+                    col_mapping[col] = 'high'
                 elif col_lower in ['low', 'l']:
-                    col_mapping['low'] = col
+                    col_mapping[col] = 'low'
                 elif col_lower in ['close', 'c']:
-                    col_mapping['close'] = col
+                    col_mapping[col] = 'close'
                 elif col_lower in ['volume', 'vol', 'v']:
-                    col_mapping['volume'] = col
+                    col_mapping[col] = 'volume'
             
             df = df.rename(columns=col_mapping)
             
+            # 只保留需要的列
             required_cols = ['open', 'high', 'low', 'close', 'volume']
-            for col in required_cols:
-                if col not in df.columns:
-                    raise ValueError(f"缺少必要列: {col}")
+            df = df[required_cols].copy()
             
+            # 轉換數據類型
             for col in required_cols:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
             
+            # 移除 NaN
             df = df.dropna(subset=required_cols)
-            self.data = df[required_cols].reset_index(drop=True)
+            self.data = df.reset_index(drop=True)
             
-            print(f"✓ 成功加載 CSV 數據: {len(self.data)} 根 K線")
-            print(f"  價格範圍: {self.data['close'].min():.2f} ~ {self.data['close'].max():.2f}\n")
+            print(f"✓ 成功加載 {len(self.data)} 根 K線數據")
+            print(f"  價格範圍: {self.data['close'].min():.2f} ~ {self.data['close'].max():.2f}")
+            print(f"  數據時間跨度: {len(self.data)} x 15分鐘 ≈ {len(self.data)*15/60/24:.1f} 天\n")
             return True
             
         except Exception as e:
-            print(f"✗ 加載失敗: {e}\n")
+            print(f"✗ 加載失敗: {e}")
+            print("使用示例數據\n")
             return False
     
     def create_sample_data(self, n_samples=2000):
@@ -148,7 +163,7 @@ class MLDataHandler:
             'close': close_prices,
             'volume': np.random.uniform(100, 10000, n_samples)
         })
-        print(f"✓ 生成 {n_samples} 條示例数整数\n")
+        print(f"✓ 生成 {n_samples} 條示例數據\n")
     
     def calculate_indicators(self):
         """計算技術指標"""
@@ -181,7 +196,7 @@ class MLDataHandler:
         sell_levels = []
         has_profit = []
         
-        # 為每個 K線計算未來 lookforward 根中的最低和最高點
+        # 為每個K線計算未來 lookforward 根中的最低和最高點
         for i in range(len(close) - lookforward):
             future_low = low[i+1:i+1+lookforward].min()
             future_high = high[i+1:i+1+lookforward].max()
@@ -189,7 +204,7 @@ class MLDataHandler:
             sell_levels.append(future_high)
             has_profit.append(1 if (future_high - future_low) / future_low > 0.005 else 0)
         
-        # 的残余的行填为 NaN
+        # 的剩餘的行填為 NaN
         for _ in range(lookforward):
             buy_levels.append(np.nan)
             sell_levels.append(np.nan)
@@ -201,10 +216,10 @@ class MLDataHandler:
         
         initial_len = len(self.data)
         self.data = self.data.dropna()
-        print(f"✓ 訓練標籤建立完成，保留 {len(self.data)} 樣本\n")
+        print(f"✓ 訓練標籤建立完成，保留 {len(self.data)} 樣本 (移除 {initial_len - len(self.data)} 個)\n")
     
     def prepare_ml_data(self):
-        """準備 ML 数整數據"""
+        """準備 ML 數據"""
         feature_cols = ['rsi', 'stoch_k', 'stoch_d', 'macd', 'macd_signal', 
                        'macd_hist', 'bb_position', 'bb_width', 'atr']
         
@@ -255,16 +270,9 @@ class ModelTrainer:
 
 print("✓ 模型訓練類已定義\n")
 
-# Prediction Engine - FIXED
+# Prediction Engine
 class PredictionEngine:
     def __init__(self, trainer, feature_cols, data_original, data_processed):
-        """
-        Args:
-            trainer: 訓練模式
-            feature_cols: 特徵了欄
-            data_original: 原始未被 dropna 的數據
-            data_processed: 經過理理的数整数整何
-        """
         self.trainer = trainer
         self.feature_cols = feature_cols
         self.data_original = data_original.reset_index(drop=True)
@@ -275,16 +283,13 @@ class PredictionEngine:
         results = []
         lookforward = 5
         
-        # 獲取訓練集地索引
         train_indices, test_indices = train_test_indices
         
         for test_idx_in_processed, original_idx in enumerate(test_indices):
-            # 原始数整中的索引
             if original_idx + lookforward >= len(self.data_original):
                 continue
             
             try:
-                # 使用处理後的數據中的特徵進行預測
                 features = X_test.iloc[test_idx_in_processed].values.reshape(1, -1)
                 
                 buy_pred = float(self.trainer.models['buy'].predict(features)[0])
@@ -298,10 +303,8 @@ class PredictionEngine:
                 if buy_pred >= sell_pred:
                     continue
                 
-                # 獲取原始数整中的當前價格和未來数整
                 current_price = self.data_original.iloc[original_idx]['close']
                 
-                # 取未來 lookforward 根中的最低和最高點
                 future_data = self.data_original.iloc[original_idx+1:original_idx+1+lookforward]
                 if len(future_data) == 0:
                     continue
@@ -309,11 +312,9 @@ class PredictionEngine:
                 future_low = future_data['low'].min()
                 future_high = future_data['high'].max()
                 
-                # 判斷預測是否被觸發
                 buy_hit = future_low <= buy_pred
                 sell_hit = future_high >= sell_pred
                 
-                # 計算收益
                 if buy_hit and sell_hit:
                     profit = (sell_pred - buy_pred) / buy_pred * 100
                     status = 'SUCCESS'
@@ -353,31 +354,17 @@ print("-" * 60)
 
 handler = MLDataHandler()
 
-# Try loading CSV
-csv_files = [
-    '/content/drive/MyDrive/BTCUSDT_15m.csv',
-    'BTCUSDT_15m.csv',
-    '/tmp/BTCUSDT_15m.csv',
-]
-
-data_loaded = False
-for csv_path in csv_files:
-    if handler.load_csv_data(csv_path):
-        data_loaded = True
-        break
-
-if not data_loaded:
-    print("未找到 CSV 文件，使用示例数整数")
+# 嘗試從 Hugging Face 加載
+if not handler.load_from_huggingface():
     handler.create_sample_data(n_samples=2000)
-    print()
 
-# Keep reference to original data BEFORE indicators
+# Keep reference to original data
 data_before_indicators = handler.data.copy()
 
 handler.calculate_indicators()
 handler.create_training_labels(lookforward=5)
 
-print("步驟 2: 準備 ML 数整數據")
+print("步驟 2: 準備 ML 數據")
 print("-" * 60)
 X, y_buy, y_sell, y_profit, feature_cols = handler.prepare_ml_data()
 
@@ -416,7 +403,7 @@ if len(backtest_df) > 0:
     failed = (backtest_df['status'] == 'FAILED').sum()
     total = len(backtest_df)
     
-    print(f"總交易次数: {total}")
+    print(f"總交易次數: {total}")
     print(f"成功交易: {success} ({success/total*100:.2f}%)")
     print(f"部分成功: {partial} ({partial/total*100:.2f}%)")
     print(f"失敗交易: {failed} ({failed/total*100:.2f}%)\n")
@@ -454,10 +441,11 @@ if len(backtest_df) > 0:
     # Chart 2
     ax2 = axes[0, 1]
     ax2.hist(backtest_df['profit_pct'], bins=30, color='#3498db', edgecolor='black')
-    ax2.axvline(backtest_df['profit_pct'].mean(), color='red', linestyle='--', linewidth=2)
+    ax2.axvline(backtest_df['profit_pct'].mean(), color='red', linestyle='--', linewidth=2, label='平均值')
     ax2.set_xlabel('收益率 (%)')
-    ax2.set_ylabel('交易次数')
+    ax2.set_ylabel('交易次數')
     ax2.set_title('收益率分布', fontweight='bold')
+    ax2.legend()
     
     # Chart 3
     ax3 = axes[1, 0]
@@ -467,6 +455,7 @@ if len(backtest_df) > 0:
     ax3.set_xlabel('交易序列')
     ax3.set_ylabel('累積收益 (%)')
     ax3.set_title('累積收益曲線', fontweight='bold')
+    ax3.grid(alpha=0.3)
     
     # Chart 4
     ax4 = axes[1, 1]
@@ -476,6 +465,7 @@ if len(backtest_df) > 0:
     ax4.bar(metrics, values, color=colors_bar)
     ax4.set_ylabel('值')
     ax4.set_title('正向指標', fontweight='bold')
+    ax4.grid(axis='y', alpha=0.3)
     
     plt.tight_layout()
     plt.savefig('btc_backtest_results.png', dpi=150, bbox_inches='tight')
@@ -485,4 +475,4 @@ if len(backtest_df) > 0:
     print("✓ 訓練流程完成！")
     print("="*60)
 else:
-    print("⚠️ 無法生成足夠的預測結果。")
+    print("⚠️ 無法生成足夠的預測結果。請檢查數據和參數設置。")
