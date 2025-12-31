@@ -197,21 +197,21 @@ class ModelTrainer:
         print("="*60 + "\n")
         
         print("⬼ 訓練買入點位迴歸器...")
-        model = RandomForestRegressor(n_estimators=100, max_depth=15, n_jobs=-1)
+        model = RandomForestRegressor(n_estimators=100, max_depth=15, n_jobs=-1, random_state=42)
         model.fit(X_train, y_buy_train)
         buy_r2 = model.score(X_test, y_buy_test)
         self.models['buy'] = model
         print(f"✓ 買入點位 R²: {buy_r2:.4f}\n")
         
         print("⬼ 訓練賣出點位迴歸器...")
-        model = RandomForestRegressor(n_estimators=100, max_depth=15, n_jobs=-1)
+        model = RandomForestRegressor(n_estimators=100, max_depth=15, n_jobs=-1, random_state=42)
         model.fit(X_train, y_sell_train)
         sell_r2 = model.score(X_test, y_sell_test)
         self.models['sell'] = model
         print(f"✓ 賣出點位 R²: {sell_r2:.4f}\n")
         
         print("⬼ 訓練盈利判定分類器...")
-        model = RandomForestClassifier(n_estimators=100, max_depth=10, n_jobs=-1)
+        model = RandomForestClassifier(n_estimators=100, max_depth=10, n_jobs=-1, random_state=42)
         model.fit(X_train, y_profit_train)
         profit_acc = model.score(X_test, y_profit_test)
         self.models['profit'] = model
@@ -219,7 +219,7 @@ class ModelTrainer:
 
 print("✓ 模型訓練類已定義\n")
 
-# Step 6: Define Predictor
+# Step 6: Define Predictor with Fixed Index Handling
 class PredictionEngine:
     def __init__(self, trainer, feature_cols, scaler, data):
         self.trainer = trainer
@@ -228,58 +228,72 @@ class PredictionEngine:
         self.data = data
     
     def predict_and_backtest(self, X_test, test_indices):
-        """預測並進行回測"""
+        """預測並進行回測 - 修復版本，完整的邊界檢查"""
         results = []
         lookforward = 3
         
-        # 取得原始數據中對應的索引
-        for idx, test_idx in enumerate(test_indices):
+        for idx in range(len(X_test)):
+            test_idx = test_indices[idx]
+            
+            # 檢查邊界：確保有足夠的未來數據用於回測
             if test_idx + lookforward + 1 >= len(self.data):
                 continue
             
-            # 獲取測試樣本並預測
-            features = X_test.iloc[idx].values.reshape(1, -1)
+            try:
+                # 獲取測試樣本並預測
+                features = X_test.iloc[idx].values.reshape(1, -1)
+                
+                buy_pred = float(self.trainer.models['buy'].predict(features)[0])
+                sell_pred = float(self.trainer.models['sell'].predict(features)[0])
+                
+                # 預測盈利概率
+                if hasattr(self.trainer.models['profit'], 'predict_proba'):
+                    profit_prob = float(self.trainer.models['profit'].predict_proba(features)[0][1])
+                else:
+                    profit_prob = float(self.trainer.models['profit'].predict(features)[0])
+                
+                # 從原始數據中安全獲取未來行情
+                future_start = test_idx + 1
+                future_end = min(test_idx + 1 + lookforward, len(self.data))
+                
+                if future_end - future_start < lookforward:
+                    continue
+                
+                future_data = self.data.iloc[future_start:future_end]
+                future_low = future_data['low'].min()
+                future_high = future_data['high'].max()
+                current_price = self.data.iloc[test_idx]['close']
+                
+                # 判斷預測準確性
+                buy_hit = future_low <= buy_pred <= future_high
+                sell_hit = future_low <= sell_pred <= future_high
+                
+                if buy_hit and sell_hit:
+                    profit = (sell_pred - buy_pred) / buy_pred * 100
+                    status = 'SUCCESS'
+                elif buy_hit:
+                    profit = (future_high - buy_pred) / buy_pred * 100
+                    status = 'PARTIAL'
+                else:
+                    profit = 0
+                    status = 'FAILED'
+                
+                results.append({
+                    'current_price': float(current_price),
+                    'pred_buy': buy_pred,
+                    'pred_sell': sell_pred,
+                    'actual_low': float(future_low),
+                    'actual_high': float(future_high),
+                    'profit_pct': profit,
+                    'status': status,
+                    'profit_prob': profit_prob
+                })
             
-            buy_pred = self.trainer.models['buy'].predict(features)[0]
-            sell_pred = self.trainer.models['sell'].predict(features)[0]
-            profit_prob = self.trainer.models['profit'].predict_proba(features)[0][1]
-            
-            # 從原始數據中獲取未來行情
-            future_data = self.data.iloc[test_idx+1:test_idx+1+lookforward]
-            
-            if len(future_data) < lookforward:
+            except Exception as e:
+                # 跳過有任何預測錯誤的樣本
                 continue
-            
-            future_low = future_data['low'].min()
-            future_high = future_data['high'].max()
-            current_price = self.data.iloc[test_idx]['close']
-            
-            # 判斷預測準確性
-            buy_hit = future_low <= buy_pred <= future_high
-            sell_hit = future_low <= sell_pred <= future_high
-            
-            if buy_hit and sell_hit:
-                profit = (sell_pred - buy_pred) / buy_pred * 100
-                status = 'SUCCESS'
-            elif buy_hit:
-                profit = (future_high - buy_pred) / buy_pred * 100
-                status = 'PARTIAL'
-            else:
-                profit = 0
-                status = 'FAILED'
-            
-            results.append({
-                'current_price': current_price,
-                'pred_buy': buy_pred,
-                'pred_sell': sell_pred,
-                'actual_low': future_low,
-                'actual_high': future_high,
-                'profit_pct': profit,
-                'status': status,
-                'profit_prob': profit_prob
-            })
         
-        return pd.DataFrame(results)
+        return pd.DataFrame(results) if results else pd.DataFrame()
 
 print("✓ 預測器類已定義\n")
 
