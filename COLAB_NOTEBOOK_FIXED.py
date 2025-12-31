@@ -1,6 +1,6 @@
 # BTC ML Trading System - Colab Version
 # ===================================================
-# 完整的䮤易模型訓練和預測系統
+# 完整的交易模型訓練和預測系統
 # 第一步：安裝依賴
 # 第二步：運行此 Python 文件
 
@@ -99,7 +99,7 @@ class MLDataHandler:
         self.indicators = TechnicalIndicators()
     
     def create_sample_data(self, n_samples=2000):
-        """生成示例数据"""
+        """生成示例數據"""
         np.random.seed(42)
         dates = pd.date_range(start='2024-01-01', periods=n_samples, freq='15T')
         
@@ -116,7 +116,7 @@ class MLDataHandler:
             'volume': np.random.uniform(100, 10000, n_samples)
         })
         self.data.set_index('timestamp', inplace=True)
-        print(f"✓ 生成 {n_samples} 條示例数据\n")
+        print(f"✓ 生成 {n_samples} 條示例數據\n")
     
     def calculate_indicators(self):
         """計算技術指標"""
@@ -221,64 +221,62 @@ print("✓ 模型訓練類已定義\n")
 
 # Step 6: Define Predictor
 class PredictionEngine:
-    def __init__(self, trainer, feature_cols, scaler):
+    def __init__(self, trainer, feature_cols, scaler, data):
         self.trainer = trainer
         self.feature_cols = feature_cols
         self.scaler = scaler
+        self.data = data
     
-    def predict(self, X_test, data_test):
-        """預測造句點位和盈利概率"""
-        predictions = []
-        X_test_scaled = self.scaler.transform(X_test)
+    def predict_and_backtest(self, X_test, test_indices):
+        """預測並進行回測"""
+        results = []
+        lookforward = 3
         
-        for i in range(len(X_test_scaled)):
-            features = X_test_scaled[i].reshape(1, -1)
+        # 取得原始數據中對應的索引
+        for idx, test_idx in enumerate(test_indices):
+            if test_idx + lookforward + 1 >= len(self.data):
+                continue
+            
+            # 獲取測試樣本並預測
+            features = X_test.iloc[idx].values.reshape(1, -1)
             
             buy_pred = self.trainer.models['buy'].predict(features)[0]
             sell_pred = self.trainer.models['sell'].predict(features)[0]
             profit_prob = self.trainer.models['profit'].predict_proba(features)[0][1]
             
-            predictions.append({
-                'buy': buy_pred,
-                'sell': sell_pred,
-                'profit_prob': profit_prob
-            })
-        
-        return predictions
-    
-    def backtest(self, predictions, data_test):
-        """回測計算準確性"""
-        results = []
-        lookforward = 3
-        
-        for i in range(len(predictions) - lookforward):
-            pred = predictions[i]
-            future_data = data_test.iloc[i+1:i+1+lookforward]
+            # 從原始數據中獲取未來行情
+            future_data = self.data.iloc[test_idx+1:test_idx+1+lookforward]
+            
+            if len(future_data) < lookforward:
+                continue
             
             future_low = future_data['low'].min()
             future_high = future_data['high'].max()
+            current_price = self.data.iloc[test_idx]['close']
             
-            buy_hit = future_low <= pred['buy'] <= future_high
-            sell_hit = future_low <= pred['sell'] <= future_high
+            # 判斷預測準確性
+            buy_hit = future_low <= buy_pred <= future_high
+            sell_hit = future_low <= sell_pred <= future_high
             
             if buy_hit and sell_hit:
-                profit = (pred['sell'] - pred['buy']) / pred['buy'] * 100
+                profit = (sell_pred - buy_pred) / buy_pred * 100
                 status = 'SUCCESS'
             elif buy_hit:
-                profit = (future_high - pred['buy']) / pred['buy'] * 100
+                profit = (future_high - buy_pred) / buy_pred * 100
                 status = 'PARTIAL'
             else:
                 profit = 0
                 status = 'FAILED'
             
             results.append({
-                'pred_buy': pred['buy'],
-                'pred_sell': pred['sell'],
+                'current_price': current_price,
+                'pred_buy': buy_pred,
+                'pred_sell': sell_pred,
                 'actual_low': future_low,
                 'actual_high': future_high,
                 'profit_pct': profit,
                 'status': status,
-                'profit_prob': pred['profit_prob']
+                'profit_prob': profit_prob
             })
         
         return pd.DataFrame(results)
@@ -301,7 +299,10 @@ print("步驟 2: 準備 ML 數據")
 print("-" * 60)
 X, y_buy, y_sell, y_profit, feature_cols = handler.prepare_ml_data()
 
-X_train, X_test, y_buy_train, y_buy_test = train_test_split(X, y_buy, test_size=0.2, random_state=42)
+# 記錄測試集的原始索引
+X_train, X_test, y_buy_train, y_buy_test, train_idx, test_idx = train_test_split(
+    X, y_buy, np.arange(len(X)), test_size=0.2, random_state=42
+)
 _, _, y_sell_train, y_sell_test = train_test_split(X, y_sell, test_size=0.2, random_state=42)
 _, _, y_profit_train, y_profit_test = train_test_split(X, y_profit, test_size=0.2, random_state=42)
 
@@ -316,95 +317,99 @@ trainer.train_models(X_train, y_buy_train, y_sell_train, y_profit_train,
 
 print("步驟 4: 預測和回測")
 print("-" * 60)
-engine = PredictionEngine(trainer, feature_cols, handler.scaler_features)
-predictions = engine.predict(X_test, handler.data.loc[X_test.index])
-backtest_df = engine.backtest(predictions, handler.data.loc[X_test.index])
+engine = PredictionEngine(trainer, feature_cols, handler.scaler_features, handler.data)
+backtest_df = engine.predict_and_backtest(X_test, test_idx)
 
-print(f"✓ 完成 {len(predictions)} 個預測\n")
-
-# Step 8: Display results
-print("="*60)
-print("回測統計")
-print("="*60 + "\n")
-
-success = (backtest_df['status'] == 'SUCCESS').sum()
-partial = (backtest_df['status'] == 'PARTIAL').sum()
-failed = (backtest_df['status'] == 'FAILED').sum()
-total = len(backtest_df)
-
-print(f"總交易次數: {total}")
-print(f"成功交易: {success} ({success/total*100:.2f}%)")
-print(f"部分成功: {partial} ({partial/total*100:.2f}%)")
-print(f"失敗交易: {failed} ({failed/total*100:.2f}%)\n")
-
-print(f"平均收益率: {backtest_df['profit_pct'].mean():+.4f}%")
-print(f"最大收益率: {backtest_df['profit_pct'].max():+.4f}%")
-print(f"最小收益率: {backtest_df['profit_pct'].min():+.4f}%")
-print(f"總累積收益: {backtest_df['profit_pct'].sum():+.2f}%\n")
-
-# Step 9: Show first 10 predictions
-print("前 10 個預測結果:")
-print("-" * 80)
-for i in range(min(10, len(backtest_df))):
-    print(f"預測 {i+1}:")
-    print(f"  預測買入: {backtest_df.iloc[i]['pred_buy']:.2f}")
-    print(f"  預測賣出: {backtest_df.iloc[i]['pred_sell']:.2f}")
-    print(f"  盈利概率: {backtest_df.iloc[i]['profit_prob']*100:.2f}%")
-    print(f"  結果: {backtest_df.iloc[i]['status']}")
-    print(f"  收益: {backtest_df.iloc[i]['profit_pct']:+.4f}%\n")
-
-# Step 10: Export results
-output_file = 'btc_predictions_backtest.csv'
-backtest_df.to_csv(output_file, index=False)
-print(f"\n✓ 結果已導出到: {output_file}")
-print(f"✓ 詳細預測数据帮你保存\n")
-
-# Step 11: Visualization
-fig, axes = plt.subplots(2, 2, figsize=(15, 10))
-fig.suptitle('BTC ML Trader - 回測結果分析', fontsize=16, fontweight='bold')
-
-# Chart 1: Success distribution pie
-ax1 = axes[0, 0]
-sizes = [success, partial, failed]
-labels = [f'成功 ({success})', f'部分 ({partial})', f'失敗 ({failed})']
-colors = ['#2ecc71', '#f39c12', '#e74c3c']
-ax1.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
-ax1.set_title('交易結果分布', fontweight='bold')
-
-# Chart 2: Profit distribution histogram
-ax2 = axes[0, 1]
-ax2.hist(backtest_df['profit_pct'], bins=30, color='#3498db', edgecolor='black', alpha=0.7)
-ax2.axvline(backtest_df['profit_pct'].mean(), color='red', linestyle='--', linewidth=2)
-ax2.set_xlabel('收益率 (%)')
-ax2.set_ylabel('交易次數')
-ax2.set_title('收益率分布', fontweight='bold')
-ax2.grid(alpha=0.3)
-
-# Chart 3: Cumulative profit
-ax3 = axes[1, 0]
-cumulative = backtest_df['profit_pct'].cumsum()
-ax3.plot(range(len(cumulative)), cumulative.values, linewidth=2, color='#9b59b6')
-ax3.fill_between(range(len(cumulative)), cumulative.values, alpha=0.3, color='#9b59b6')
-ax3.set_xlabel('交易序列')
-ax3.set_ylabel('累積收益 (%)')
-ax3.set_title('累積收益曲線', fontweight='bold')
-ax3.grid(alpha=0.3)
-
-# Chart 4: Accuracy metrics
-ax4 = axes[1, 1]
-metrics = ['整體成功率', '平均收益', '最大收益']
-values = [success/total*100, backtest_df['profit_pct'].mean(), backtest_df['profit_pct'].max()]
-colors_bar = ['#2ecc71', '#3498db', '#e74c3c']
-ax4.bar(metrics, values, color=colors_bar, alpha=0.7, edgecolor='black')
-ax4.set_ylabel('值')
-ax4.set_title('正方向指標', fontweight='bold')
-ax4.grid(axis='y', alpha=0.3)
-
-plt.tight_layout()
-plt.savefig('btc_backtest_results.png', dpi=150, bbox_inches='tight')
-plt.show()
-print("✓ 圖表已生成\n")
-
-print("="*60)
-print("✓ 訓練流程完成！")
-print("="*60)
+if len(backtest_df) > 0:
+    print(f"✓ 完成 {len(backtest_df)} 個預測\n")
+    
+    # Step 8: Display results
+    print("="*60)
+    print("回測統計")
+    print("="*60 + "\n")
+    
+    success = (backtest_df['status'] == 'SUCCESS').sum()
+    partial = (backtest_df['status'] == 'PARTIAL').sum()
+    failed = (backtest_df['status'] == 'FAILED').sum()
+    total = len(backtest_df)
+    
+    print(f"總交易次數: {total}")
+    print(f"成功交易: {success} ({success/total*100:.2f}%)")
+    print(f"部分成功: {partial} ({partial/total*100:.2f}%)")
+    print(f"失敗交易: {failed} ({failed/total*100:.2f}%)\n")
+    
+    print(f"平均收益率: {backtest_df['profit_pct'].mean():+.4f}%")
+    print(f"最大收益率: {backtest_df['profit_pct'].max():+.4f}%")
+    print(f"最小收益率: {backtest_df['profit_pct'].min():+.4f}%")
+    print(f"總累積收益: {backtest_df['profit_pct'].sum():+.2f}%\n")
+    
+    # Step 9: Show first 10 predictions
+    print("前 10 個預測結果:")
+    print("-" * 80)
+    for i in range(min(10, len(backtest_df))):
+        row = backtest_df.iloc[i]
+        print(f"預測 {i+1}:")
+        print(f"  現價: {row['current_price']:.2f}")
+        print(f"  預測買入: {row['pred_buy']:.2f}")
+        print(f"  預測賣出: {row['pred_sell']:.2f}")
+        print(f"  盈利概率: {row['profit_prob']*100:.2f}%")
+        print(f"  結果: {row['status']}")
+        print(f"  收益: {row['profit_pct']:+.4f}%\n")
+    
+    # Step 10: Export results
+    output_file = 'btc_predictions_backtest.csv'
+    backtest_df.to_csv(output_file, index=False)
+    print(f"✓ 結果已導出到: {output_file}")
+    print(f"✓ 詳細預測數據幫你保存\n")
+    
+    # Step 11: Visualization
+    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+    fig.suptitle('BTC ML Trader - 回測結果分析', fontsize=16, fontweight='bold')
+    
+    # Chart 1: Success distribution pie
+    ax1 = axes[0, 0]
+    sizes = [success, partial, failed]
+    labels = [f'成功 ({success})', f'部分 ({partial})', f'失敗 ({failed})']
+    colors = ['#2ecc71', '#f39c12', '#e74c3c']
+    ax1.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
+    ax1.set_title('交易結果分布', fontweight='bold')
+    
+    # Chart 2: Profit distribution histogram
+    ax2 = axes[0, 1]
+    ax2.hist(backtest_df['profit_pct'], bins=30, color='#3498db', edgecolor='black', alpha=0.7)
+    ax2.axvline(backtest_df['profit_pct'].mean(), color='red', linestyle='--', linewidth=2)
+    ax2.set_xlabel('收益率 (%)')
+    ax2.set_ylabel('交易次數')
+    ax2.set_title('收益率分布', fontweight='bold')
+    ax2.grid(alpha=0.3)
+    
+    # Chart 3: Cumulative profit
+    ax3 = axes[1, 0]
+    cumulative = backtest_df['profit_pct'].cumsum()
+    ax3.plot(range(len(cumulative)), cumulative.values, linewidth=2, color='#9b59b6')
+    ax3.fill_between(range(len(cumulative)), cumulative.values, alpha=0.3, color='#9b59b6')
+    ax3.set_xlabel('交易序列')
+    ax3.set_ylabel('累積收益 (%)')
+    ax3.set_title('累積收益曲線', fontweight='bold')
+    ax3.grid(alpha=0.3)
+    
+    # Chart 4: Accuracy metrics
+    ax4 = axes[1, 1]
+    metrics = ['整體成功率', '平均收益', '最大收益']
+    values = [success/total*100, backtest_df['profit_pct'].mean(), backtest_df['profit_pct'].max()]
+    colors_bar = ['#2ecc71', '#3498db', '#e74c3c']
+    ax4.bar(metrics, values, color=colors_bar, alpha=0.7, edgecolor='black')
+    ax4.set_ylabel('值')
+    ax4.set_title('正向指標', fontweight='bold')
+    ax4.grid(axis='y', alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig('btc_backtest_results.png', dpi=150, bbox_inches='tight')
+    plt.show()
+    print("✓ 圖表已生成\n")
+    
+    print("="*60)
+    print("✓ 訓練流程完成！")
+    print("="*60)
+else:
+    print("\n⚠️ 無法生成足夠的預測結果。請檢查數據和參數設置。")
