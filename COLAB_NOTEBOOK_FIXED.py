@@ -228,7 +228,7 @@ class PredictionEngine:
         self.data = data
     
     def predict_and_backtest(self, X_test, test_indices):
-        """預測並進行回測 - 完整修復版本"""
+        """預測並進行回測 - 優化版本"""
         results = []
         lookforward = 3
         
@@ -239,12 +239,12 @@ class PredictionEngine:
             # 獲取原始數據中的索引位置
             data_idx = test_indices[idx]
             
-            # 邊界檢查
-            if data_idx + lookforward >= len(self.data):
+            # 只檢查是否有至少1個未來數據點（放寬條件）
+            if data_idx + 1 >= len(self.data):
                 continue
             
             try:
-                # 用重置後的 X_test 獲取特徵
+                # 使用重置後的 X_test 獲取特徵
                 features = X_test_reset.iloc[idx].values.reshape(1, -1)
                 
                 # 預測買入和賣出點位
@@ -257,13 +257,15 @@ class PredictionEngine:
                 else:
                     profit_prob = float(self.trainer.models['profit'].predict(features)[0])
                 
-                # 從原始數據中獲取未來行情
-                future_data = self.data.iloc[data_idx+1:data_idx+1+lookforward]
+                # 從原始數據中獲取未來行情（向前看 lookforward 根 K線）
+                future_start = data_idx + 1
+                future_end = min(data_idx + 1 + lookforward, len(self.data))
                 
-                # 確保有足夠的未來數據
-                if len(future_data) < lookforward:
+                # 如果沒有足夠的未來數據，使用現有的數據
+                if future_end - future_start < 1:
                     continue
                 
+                future_data = self.data.iloc[future_start:future_end]
                 future_low = future_data['low'].min()
                 future_high = future_data['high'].max()
                 current_price = self.data.iloc[data_idx]['close']
@@ -279,7 +281,7 @@ class PredictionEngine:
                     profit = (future_high - buy_pred) / buy_pred * 100
                     status = 'PARTIAL'
                 else:
-                    profit = 0
+                    profit = (future_high - current_price) / current_price * 100
                     status = 'FAILED'
                 
                 results.append({
