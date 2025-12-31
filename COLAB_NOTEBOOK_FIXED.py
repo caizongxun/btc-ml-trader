@@ -228,21 +228,26 @@ class PredictionEngine:
         self.data = data
     
     def predict_and_backtest(self, X_test, test_indices):
-        """預測並進行回測 - 修復版本，完整的邊界檢查"""
+        """預測並進行回測 - 完整修復版本"""
         results = []
         lookforward = 3
         
-        for idx in range(len(X_test)):
-            test_idx = test_indices[idx]
+        # 重置 X_test 索引確保連續性
+        X_test_reset = X_test.reset_index(drop=True)
+        
+        for idx in range(len(X_test_reset)):
+            # 獲取原始數據中的索引位置
+            data_idx = test_indices[idx]
             
-            # 檢查邊界：確保有足夠的未來數據用於回測
-            if test_idx + lookforward + 1 >= len(self.data):
+            # 邊界檢查
+            if data_idx + lookforward >= len(self.data):
                 continue
             
             try:
-                # 獲取測試樣本並預測
-                features = X_test.iloc[idx].values.reshape(1, -1)
+                # 用重置後的 X_test 獲取特徵
+                features = X_test_reset.iloc[idx].values.reshape(1, -1)
                 
+                # 預測買入和賣出點位
                 buy_pred = float(self.trainer.models['buy'].predict(features)[0])
                 sell_pred = float(self.trainer.models['sell'].predict(features)[0])
                 
@@ -252,17 +257,16 @@ class PredictionEngine:
                 else:
                     profit_prob = float(self.trainer.models['profit'].predict(features)[0])
                 
-                # 從原始數據中安全獲取未來行情
-                future_start = test_idx + 1
-                future_end = min(test_idx + 1 + lookforward, len(self.data))
+                # 從原始數據中獲取未來行情
+                future_data = self.data.iloc[data_idx+1:data_idx+1+lookforward]
                 
-                if future_end - future_start < lookforward:
+                # 確保有足夠的未來數據
+                if len(future_data) < lookforward:
                     continue
                 
-                future_data = self.data.iloc[future_start:future_end]
                 future_low = future_data['low'].min()
                 future_high = future_data['high'].max()
-                current_price = self.data.iloc[test_idx]['close']
+                current_price = self.data.iloc[data_idx]['close']
                 
                 # 判斷預測準確性
                 buy_hit = future_low <= buy_pred <= future_high
@@ -290,7 +294,7 @@ class PredictionEngine:
                 })
             
             except Exception as e:
-                # 跳過有任何預測錯誤的樣本
+                # 跳過有錯誤的樣本，繼續處理下一個
                 continue
         
         return pd.DataFrame(results) if results else pd.DataFrame()
