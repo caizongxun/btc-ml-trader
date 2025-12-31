@@ -94,7 +94,7 @@ class MLDataHandler:
             self.data = pd.read_csv(self.csv_path)
             
             debug.metric("加載的行數", len(self.data))
-            debug.metric("加載的列數", len(self.data.columns))
+            debug.metric("加載的列数", len(self.data.columns))
             debug.log('INFO', f"列名: {list(self.data.columns)}")
             
             # 顯示數據類型
@@ -256,10 +256,11 @@ class MLDataHandler:
             'price_to_sell_distance', 'order_fill_rate', 'order_profit_rate'
         ]
         
-        target_cols = ['order_filled', 'order_profitable']
+        # 包括两个分类標签和两个回归求解目標
+        target_cols = ['order_filled', 'order_profitable', 'buy_pending_level', 'sell_pending_level']
         
-        debug.metric("特徵數", len(feature_cols))
-        debug.metric("目標數", len(target_cols))
+        debug.metric("特徵数", len(feature_cols))
+        debug.metric("目標数", len(target_cols))
         
         X = self.data[feature_cols].copy()
         y = self.data[target_cols].copy()
@@ -274,8 +275,8 @@ class MLDataHandler:
         X_scaled = self.scaler_features.fit_transform(X)
         X_scaled = pd.DataFrame(X_scaled, columns=feature_cols)
         
-        debug.metric("準備的樣本數", X_scaled.shape[0])
-        debug.metric("最終特徵數", X_scaled.shape[1])
+        debug.metric("準備的樣本数", X_scaled.shape[0])
+        debug.metric("最終特徵数", X_scaled.shape[1])
         debug.end_section("準備 ML 數據")
         
         return X_scaled, y, feature_cols
@@ -507,8 +508,8 @@ class MLModelTrainer:
             r2_values = [pending['buy']['r2'], pending['sell']['r2']]
             
             ax2.bar(r2_models, r2_values, color=['#e74c3c', '#f39c12'])
-            ax2.set_ylabel('R² 分數')
-            ax2.set_title('迴歸模型 R² 分數')
+            ax2.set_ylabel('R² 分数')
+            ax2.set_title('迴歸模型 R² 分数')
             ax2.set_ylim([0, 1])
             for i, v in enumerate(r2_values):
                 ax2.text(i, v + 0.02, f'{v:.4f}', ha='center')
@@ -532,7 +533,7 @@ class MLModelTrainer:
         stats_text = "訓練統計\n" + "="*40 + "\n"
         stats_text += f"訓練樣本: {len(X_test)}\n"
         stats_text += f"測試樣本: {len(X_test)}\n"
-        stats_text += f"特徵數: {len(feature_cols)}\n\n"
+        stats_text += f"特徵数: {len(feature_cols)}\n\n"
         stats_text += "分類模型準確率:\n"
         
         if 'order_filled' in self.results:
