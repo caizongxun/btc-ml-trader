@@ -1,44 +1,39 @@
-# BTC ML Trading System - Colab Version
-# ===================================================
-# 完整的交易模型訓練和預測系統 - 支持實際 CSV 數據
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+BTC ML Trading System - Colab Version
+完整的交易模型訓練和預測系統 - 支持實際 CSV 數據
+步驟 1：安裝依賴
+步驟 2：運行此 Python 文件
+"""
+
+import subprocess
+import sys
+import pandas as pd
+import numpy as np
+from datetime import datetime
+import json
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestRegressor, RandomForestClassifier
+import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.rcParams['font.sans-serif'] = ['SimHei']
+matplotlib.rcParams['axes.unicode_minus'] = False
+import warnings
+warnings.filterwarnings('ignore')
 
 print("\n" + "="*60)
 print("機器學習交易系統 - Colab 版本")
 print("="*60 + "\n")
 
-# Step 1: Install dependencies
-import subprocess
-import sys
-
+# Install dependencies
 print("⬼ 安裝依賴...")
 subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", 
-                       "pandas", "numpy", "scikit-learn", "matplotlib", 
-                       "seaborn", "pyarrow", "huggingface_hub"])
+                       "pandas", "numpy", "scikit-learn", "matplotlib"])
 print("✓ 依賴安裝完成\n")
 
-# Step 2: Import modules
-import pandas as pd
-import numpy as np
-from datetime import datetime
-import json
-import pickle
-from pathlib import Path
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler, MinMaxScaler
-from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor, RandomForestClassifier
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error, accuracy_score
-import matplotlib.pyplot as plt
-import matplotlib
-matplotlib.rcParams['font.sans-serif'] = ['SimHei']
-matplotlib.rcParams['axes.unicode_minus'] = False
-import seaborn as sns
-import warnings
-warnings.filterwarnings('ignore')
-
-print("✓ 所有模塊已導入\n")
-
-# Step 3: Define Technical Indicators
+# Technical Indicators
 class TechnicalIndicators:
     """計算技術指標"""
     
@@ -89,7 +84,7 @@ class TechnicalIndicators:
 
 print("✓ 技術指標類已定義\n")
 
-# Step 4: Define Data Handler
+# Data Handler
 class MLDataHandler:
     def __init__(self):
         self.data = None
@@ -101,7 +96,7 @@ class MLDataHandler:
         try:
             df = pd.read_csv(csv_path)
             
-            # 自動檢測列名（支持多種格式）
+            # 自動檢測列名
             col_mapping = {}
             for col in df.columns:
                 col_lower = col.lower().strip()
@@ -118,34 +113,29 @@ class MLDataHandler:
                 elif col_lower in ['volume', 'vol', 'v']:
                     col_mapping['volume'] = col
             
-            # 重命名列
             df = df.rename(columns=col_mapping)
             
-            # 確保必要列存在
             required_cols = ['open', 'high', 'low', 'close', 'volume']
             for col in required_cols:
                 if col not in df.columns:
                     raise ValueError(f"缺少必要列: {col}")
             
-            # 轉換數據類型
             for col in required_cols:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
             
-            # 移除缺失值
             df = df.dropna(subset=required_cols)
+            self.data = df[required_cols].reset_index(drop=True)
             
-            self.data = df[required_cols].copy()
             print(f"✓ 成功加載 CSV 數據: {len(self.data)} 根 K線")
-            print(f"  時間範圍: 首行 ~ 末行")
             print(f"  價格範圍: {self.data['close'].min():.2f} ~ {self.data['close'].max():.2f}\n")
             return True
             
         except Exception as e:
-            print(f"✗ 加載 CSV 失敗: {e}\n")
+            print(f"✗ 加載失敗: {e}\n")
             return False
     
     def create_sample_data(self, n_samples=2000):
-        """生成示例數據用於測試"""
+        """生成示例數據"""
         np.random.seed(42)
         close_prices = np.cumsum(np.random.randn(n_samples) * 0.0005) + 42000
         high_prices = close_prices + np.abs(np.random.randn(n_samples) * 0.002)
@@ -158,7 +148,7 @@ class MLDataHandler:
             'close': close_prices,
             'volume': np.random.uniform(100, 10000, n_samples)
         })
-        print(f"✓ 生成 {n_samples} 條示例數據\n")
+        print(f"✓ 生成 {n_samples} 條示例数整数\n")
     
     def calculate_indicators(self):
         """計算技術指標"""
@@ -187,55 +177,54 @@ class MLDataHandler:
         high = self.data['high'].values
         low = self.data['low'].values
         
-        buy_levels = np.full(len(close), np.nan)
-        sell_levels = np.full(len(close), np.nan)
-        has_profit = np.full(len(close), np.nan)
+        buy_levels = []
+        sell_levels = []
+        has_profit = []
         
         # 為每個 K線計算未來 lookforward 根中的最低和最高點
         for i in range(len(close) - lookforward):
             future_low = low[i+1:i+1+lookforward].min()
             future_high = high[i+1:i+1+lookforward].max()
-            buy_levels[i] = future_low
-            sell_levels[i] = future_high
-            # 如果未來波幅 > 0.5% 則認為有盈利機會
-            has_profit[i] = 1 if (future_high - future_low) / future_low > 0.005 else 0
+            buy_levels.append(future_low)
+            sell_levels.append(future_high)
+            has_profit.append(1 if (future_high - future_low) / future_low > 0.005 else 0)
+        
+        # 的残余的行填为 NaN
+        for _ in range(lookforward):
+            buy_levels.append(np.nan)
+            sell_levels.append(np.nan)
+            has_profit.append(np.nan)
         
         self.data['buy_target'] = buy_levels
         self.data['sell_target'] = sell_levels
         self.data['has_profit'] = has_profit
         
-        # 移除缺失值
         initial_len = len(self.data)
         self.data = self.data.dropna()
-        print(f"✓ 訓練標籤建立完成，保留 {len(self.data)} 樣本 (移除 {initial_len - len(self.data)} 個)\n")
+        print(f"✓ 訓練標籤建立完成，保留 {len(self.data)} 樣本\n")
     
     def prepare_ml_data(self):
-        """準備 ML 數據"""
+        """準備 ML 数整數據"""
         feature_cols = ['rsi', 'stoch_k', 'stoch_d', 'macd', 'macd_signal', 
                        'macd_hist', 'bb_position', 'bb_width', 'atr']
         
-        # 移除特徵中的 NaN
-        X = self.data[feature_cols].dropna()
+        X = self.data[feature_cols].copy()
+        y_buy = self.data['buy_target'].copy()
+        y_sell = self.data['sell_target'].copy()
+        y_profit = self.data['has_profit'].copy()
         
-        # 對應標籤
-        y_buy = self.data.loc[X.index, 'buy_target']
-        y_sell = self.data.loc[X.index, 'sell_target']
-        y_profit = self.data.loc[X.index, 'has_profit']
-        
-        # 標準化特徵
         X_scaled = self.scaler_features.fit_transform(X)
-        X_scaled = pd.DataFrame(X_scaled, columns=feature_cols, index=X.index)
+        X_scaled = pd.DataFrame(X_scaled, columns=feature_cols)
         
         print(f"✓ 準備完成：{len(X_scaled)} 樣本，{len(feature_cols)} 特徵\n")
         return X_scaled, y_buy, y_sell, y_profit, feature_cols
 
 print("✓ 數據處理類已定義\n")
 
-# Step 5: Define Model Trainer
+# Model Trainer
 class ModelTrainer:
     def __init__(self):
         self.models = {}
-        self.results = {}
     
     def train_models(self, X_train, y_buy_train, y_sell_train, y_profit_train,
                     X_test, y_buy_test, y_sell_test, y_profit_test):
@@ -266,48 +255,54 @@ class ModelTrainer:
 
 print("✓ 模型訓練類已定義\n")
 
-# Step 6: Define Prediction Engine
+# Prediction Engine - FIXED
 class PredictionEngine:
-    def __init__(self, trainer, feature_cols, scaler, data):
+    def __init__(self, trainer, feature_cols, data_original, data_processed):
+        """
+        Args:
+            trainer: 訓練模式
+            feature_cols: 特徵了欄
+            data_original: 原始未被 dropna 的數據
+            data_processed: 經過理理的数整数整何
+        """
         self.trainer = trainer
         self.feature_cols = feature_cols
-        self.scaler = scaler
-        self.data = data
+        self.data_original = data_original.reset_index(drop=True)
+        self.data_processed = data_processed.reset_index(drop=True)
     
-    def predict_and_backtest(self, X_test, test_indices):
-        """預測並回測 - 使用實際數據的未來值進行驗證"""
+    def predict_and_backtest(self, X_test, train_test_indices):
+        """預測並回測 - 使用原始數據的未來值進行驗證"""
         results = []
         lookforward = 5
         
-        for idx in range(len(X_test)):
-            data_idx = test_indices[idx]
-            
-            # 檢查是否有足夠的未來數據用於評估
-            if data_idx + lookforward >= len(self.data):
+        # 獲取訓練集地索引
+        train_indices, test_indices = train_test_indices
+        
+        for test_idx_in_processed, original_idx in enumerate(test_indices):
+            # 原始数整中的索引
+            if original_idx + lookforward >= len(self.data_original):
                 continue
             
             try:
-                # 使用模型進行預測
-                features = X_test.iloc[idx].values.reshape(1, -1)
+                # 使用处理後的數據中的特徵進行預測
+                features = X_test.iloc[test_idx_in_processed].values.reshape(1, -1)
                 
                 buy_pred = float(self.trainer.models['buy'].predict(features)[0])
                 sell_pred = float(self.trainer.models['sell'].predict(features)[0])
                 
-                # 獲取盈利概率
                 if hasattr(self.trainer.models['profit'], 'predict_proba'):
                     profit_prob = float(self.trainer.models['profit'].predict_proba(features)[0][1])
                 else:
                     profit_prob = float(self.trainer.models['profit'].predict(features)[0])
                 
-                # 確保買入 < 賣出
                 if buy_pred >= sell_pred:
                     continue
                 
-                # 獲取當前價格和未來數據
-                current_price = self.data.iloc[data_idx]['close']
+                # 獲取原始数整中的當前價格和未來数整
+                current_price = self.data_original.iloc[original_idx]['close']
                 
-                # 檢查未來 lookforward 根 K線中的最低和最高點
-                future_data = self.data.iloc[data_idx+1:data_idx+1+lookforward]
+                # 取未來 lookforward 根中的最低和最高點
+                future_data = self.data_original.iloc[original_idx+1:original_idx+1+lookforward]
                 if len(future_data) == 0:
                     continue
                 
@@ -320,19 +315,17 @@ class PredictionEngine:
                 
                 # 計算收益
                 if buy_hit and sell_hit:
-                    # 完全成功：兩個點位都被觸發
                     profit = (sell_pred - buy_pred) / buy_pred * 100
                     status = 'SUCCESS'
                 elif buy_hit:
-                    # 部分成功：只有買入點被觸發
                     profit = max(0, (future_high - buy_pred) / buy_pred * 100)
                     status = 'PARTIAL'
                 else:
-                    # 失敗：買入點未被觸發
                     profit = (future_high - current_price) / current_price * 100
                     status = 'FAILED'
                 
                 results.append({
+                    'idx': original_idx,
                     'current_price': float(current_price),
                     'pred_buy': buy_pred,
                     'pred_sell': sell_pred,
@@ -340,8 +333,7 @@ class PredictionEngine:
                     'actual_high': float(future_high),
                     'profit_pct': profit,
                     'status': status,
-                    'profit_prob': profit_prob,
-                    'data_idx': data_idx
+                    'profit_prob': profit_prob
                 })
             
             except Exception as e:
@@ -351,7 +343,7 @@ class PredictionEngine:
 
 print("✓ 預測器類已定義\n")
 
-# Step 7: Main Pipeline
+# ===== MAIN PIPELINE =====
 print("="*60)
 print("開始訓練流程")
 print("="*60 + "\n")
@@ -361,11 +353,11 @@ print("-" * 60)
 
 handler = MLDataHandler()
 
-# 嘗試從 Google Drive 或本地加載數據
+# Try loading CSV
 csv_files = [
     '/content/drive/MyDrive/BTCUSDT_15m.csv',
     'BTCUSDT_15m.csv',
-    '/tmp/BTCUSDT_15m.csv'
+    '/tmp/BTCUSDT_15m.csv',
 ]
 
 data_loaded = False
@@ -375,18 +367,21 @@ for csv_path in csv_files:
         break
 
 if not data_loaded:
-    print("未找到 CSV 文件，使用生成的示例數據")
+    print("未找到 CSV 文件，使用示例数整数")
     handler.create_sample_data(n_samples=2000)
     print()
+
+# Keep reference to original data BEFORE indicators
+data_before_indicators = handler.data.copy()
 
 handler.calculate_indicators()
 handler.create_training_labels(lookforward=5)
 
-print("步驟 2: 準備 ML 數據")
+print("步驟 2: 準備 ML 数整數據")
 print("-" * 60)
 X, y_buy, y_sell, y_profit, feature_cols = handler.prepare_ml_data()
 
-# 記錄測試集的原始索引
+# Split with index tracking
 X_train, X_test, y_buy_train, y_buy_test, train_idx, test_idx = train_test_split(
     X, y_buy, np.arange(len(X)), test_size=0.2, random_state=42
 )
@@ -404,13 +399,14 @@ trainer.train_models(X_train, y_buy_train, y_sell_train, y_profit_train,
 
 print("步驟 4: 預測和回測")
 print("-" * 60 + "\n")
-engine = PredictionEngine(trainer, feature_cols, handler.scaler_features, handler.data)
-backtest_df = engine.predict_and_backtest(X_test, test_idx)
+
+engine = PredictionEngine(trainer, feature_cols, data_before_indicators, handler.data)
+backtest_df = engine.predict_and_backtest(X_test, (train_idx, test_idx))
 
 if len(backtest_df) > 0:
     print(f"✓ 完成 {len(backtest_df)} 個預測\n")
     
-    # Step 8: Display results
+    # Results
     print("="*60)
     print("回測統計")
     print("="*60 + "\n")
@@ -420,7 +416,7 @@ if len(backtest_df) > 0:
     failed = (backtest_df['status'] == 'FAILED').sum()
     total = len(backtest_df)
     
-    print(f"總交易次數: {total}")
+    print(f"總交易次数: {total}")
     print(f"成功交易: {success} ({success/total*100:.2f}%)")
     print(f"部分成功: {partial} ({partial/total*100:.2f}%)")
     print(f"失敗交易: {failed} ({failed/total*100:.2f}%)\n")
@@ -430,20 +426,15 @@ if len(backtest_df) > 0:
     print(f"最小收益率: {backtest_df['profit_pct'].min():+.4f}%")
     print(f"總累積收益: {backtest_df['profit_pct'].sum():+.2f}%\n")
     
-    # Show first 10 predictions
-    print("前 10 個預測結果:")
+    # Show sample predictions
+    print("前 5 個預測結果:")
     print("-" * 80)
-    for i in range(min(10, len(backtest_df))):
+    for i in range(min(5, len(backtest_df))):
         row = backtest_df.iloc[i]
-        print(f"預測 {i+1}:")
-        print(f"  現價: {row['current_price']:.2f}")
-        print(f"  預測買入: {row['pred_buy']:.2f}")
-        print(f"  預測賣出: {row['pred_sell']:.2f}")
-        print(f"  盈利概率: {row['profit_prob']*100:.2f}%")
-        print(f"  結果: {row['status']}")
-        print(f"  收益: {row['profit_pct']:+.4f}%\n")
+        print(f"預測 {i+1}: 現價 {row['current_price']:.2f} | 買 {row['pred_buy']:.2f} | 賣 {row['pred_sell']:.2f} | 收益 {row['profit_pct']:+.2f}% | {row['status']}")
+    print()
     
-    # Export results
+    # Export
     output_file = 'btc_predictions_backtest.csv'
     backtest_df.to_csv(output_file, index=False)
     print(f"✓ 結果已導出到: {output_file}\n")
@@ -452,51 +443,46 @@ if len(backtest_df) > 0:
     fig, axes = plt.subplots(2, 2, figsize=(15, 10))
     fig.suptitle('BTC ML Trader - 回測結果分析', fontsize=16, fontweight='bold')
     
-    # Chart 1: Success distribution pie
+    # Chart 1
     ax1 = axes[0, 0]
     sizes = [success, partial, failed]
     labels = [f'成功 ({success})', f'部分 ({partial})', f'失敗 ({failed})']
     colors = ['#2ecc71', '#f39c12', '#e74c3c']
-    ax1.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%', startangle=90)
+    ax1.pie(sizes, labels=labels, colors=colors, autopct='%1.1f%%')
     ax1.set_title('交易結果分布', fontweight='bold')
     
-    # Chart 2: Profit distribution histogram
+    # Chart 2
     ax2 = axes[0, 1]
-    ax2.hist(backtest_df['profit_pct'], bins=30, color='#3498db', edgecolor='black', alpha=0.7)
-    ax2.axvline(backtest_df['profit_pct'].mean(), color='red', linestyle='--', linewidth=2, label='平均值')
+    ax2.hist(backtest_df['profit_pct'], bins=30, color='#3498db', edgecolor='black')
+    ax2.axvline(backtest_df['profit_pct'].mean(), color='red', linestyle='--', linewidth=2)
     ax2.set_xlabel('收益率 (%)')
-    ax2.set_ylabel('交易次數')
+    ax2.set_ylabel('交易次数')
     ax2.set_title('收益率分布', fontweight='bold')
-    ax2.legend()
-    ax2.grid(alpha=0.3)
     
-    # Chart 3: Cumulative profit
+    # Chart 3
     ax3 = axes[1, 0]
     cumulative = backtest_df['profit_pct'].cumsum()
-    ax3.plot(range(len(cumulative)), cumulative.values, linewidth=2, color='#9b59b6', marker='o', markersize=3)
+    ax3.plot(cumulative.values, linewidth=2, color='#9b59b6')
     ax3.fill_between(range(len(cumulative)), cumulative.values, alpha=0.3, color='#9b59b6')
     ax3.set_xlabel('交易序列')
     ax3.set_ylabel('累積收益 (%)')
     ax3.set_title('累積收益曲線', fontweight='bold')
-    ax3.grid(alpha=0.3)
     
-    # Chart 4: Accuracy metrics
+    # Chart 4
     ax4 = axes[1, 1]
-    metrics = ['整體成功率', '平均收益', '最大收益']
+    metrics = ['成功率', '平均收益', '最大收益']
     values = [success/total*100, backtest_df['profit_pct'].mean(), backtest_df['profit_pct'].max()]
     colors_bar = ['#2ecc71', '#3498db', '#e74c3c']
-    ax4.bar(metrics, values, color=colors_bar, alpha=0.7, edgecolor='black')
+    ax4.bar(metrics, values, color=colors_bar)
     ax4.set_ylabel('值')
     ax4.set_title('正向指標', fontweight='bold')
-    ax4.grid(axis='y', alpha=0.3)
     
     plt.tight_layout()
     plt.savefig('btc_backtest_results.png', dpi=150, bbox_inches='tight')
-    plt.show()
-    print("✓ 圖表已生成\n")
+    print("✓ 圖表已生成: btc_backtest_results.png\n")
     
     print("="*60)
     print("✓ 訓練流程完成！")
     print("="*60)
 else:
-    print("⚠️ 無法生成足夠的預測結果。請檢查數據和參數設置。")
+    print("⚠️ 無法生成足夠的預測結果。")
