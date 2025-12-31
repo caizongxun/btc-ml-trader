@@ -97,7 +97,6 @@ class MLDataHandler:
         """從 Hugging Face 下載 parquet 文件"""
         try:
             print("⬼ 從 Hugging Face 下載 BTC 數據...")
-            # 下載文件
             parquet_file = hf_hub_download(
                 repo_id="zongowo111/v2-crypto-ohlcv-data",
                 filename="klines/BTCUSDT/BTC_15m.parquet",
@@ -105,10 +104,8 @@ class MLDataHandler:
                 cache_dir="./hf_cache"
             )
             
-            # 讀取 parquet
             df = pd.read_parquet(parquet_file)
             
-            # 檢查並重命名列
             col_mapping = {}
             for col in df.columns:
                 col_lower = col.lower().strip()
@@ -126,16 +123,12 @@ class MLDataHandler:
                     col_mapping[col] = 'volume'
             
             df = df.rename(columns=col_mapping)
-            
-            # 只保留需要的列
             required_cols = ['open', 'high', 'low', 'close', 'volume']
             df = df[required_cols].copy()
             
-            # 轉換數據類型
             for col in required_cols:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
             
-            # 移除 NaN
             df = df.dropna(subset=required_cols)
             self.data = df.reset_index(drop=True)
             
@@ -204,7 +197,6 @@ class MLDataHandler:
             sell_levels.append(future_high)
             has_profit.append(1 if (future_high - future_low) / future_low > 0.005 else 0)
         
-        # 的剩餘的行填為 NaN
         for _ in range(lookforward):
             buy_levels.append(np.nan)
             sell_levels.append(np.nan)
@@ -270,7 +262,7 @@ class ModelTrainer:
 
 print("✓ 模型訓練類已定義\n")
 
-# Prediction Engine
+# Prediction Engine - VECTORIZED
 class PredictionEngine:
     def __init__(self, trainer, feature_cols, data_original, data_processed):
         self.trainer = trainer
@@ -278,43 +270,58 @@ class PredictionEngine:
         self.data_original = data_original.reset_index(drop=True)
         self.data_processed = data_processed.reset_index(drop=True)
     
-    def predict_and_backtest(self, X_test, train_test_indices):
-        """預測並回測 - 使用原始數據的未來值進行驗證"""
-        results = []
-        lookforward = 5
+    def predict_and_backtest_vectorized(self, X_test, train_test_indices):
+        """預測並回測 - 使用向量化操作，透樣本快速處理"""
+        print("⬼ 預測中（向量化樣本）...")
         
+        lookforward = 5
         train_indices, test_indices = train_test_indices
         
-        for test_idx_in_processed, original_idx in enumerate(test_indices):
+        # 對整個測試集進行預測（向量化）
+        buy_preds = self.trainer.models['buy'].predict(X_test.values)
+        sell_preds = self.trainer.models['sell'].predict(X_test.values)
+        
+        if hasattr(self.trainer.models['profit'], 'predict_proba'):
+            profit_probs = self.trainer.models['profit'].predict_proba(X_test.values)[:, 1]
+        else:
+            profit_probs = self.trainer.models['profit'].predict(X_test.values)
+        
+        results = []
+        
+        # 事件專瑞化處理回測
+        for test_idx_in_processed in range(len(X_test)):
+            original_idx = test_indices[test_idx_in_processed]
+            
+            # 邊界検查
             if original_idx + lookforward >= len(self.data_original):
                 continue
             
+            # 取得預測值
+            buy_pred = float(buy_preds[test_idx_in_processed])
+            sell_pred = float(sell_preds[test_idx_in_processed])
+            profit_prob = float(profit_probs[test_idx_in_processed])
+            
+            # 運輯検查：買入 < 賣出
+            if buy_pred >= sell_pred:
+                continue
+            
             try:
-                features = X_test.iloc[test_idx_in_processed].values.reshape(1, -1)
-                
-                buy_pred = float(self.trainer.models['buy'].predict(features)[0])
-                sell_pred = float(self.trainer.models['sell'].predict(features)[0])
-                
-                if hasattr(self.trainer.models['profit'], 'predict_proba'):
-                    profit_prob = float(self.trainer.models['profit'].predict_proba(features)[0][1])
-                else:
-                    profit_prob = float(self.trainer.models['profit'].predict(features)[0])
-                
-                if buy_pred >= sell_pred:
-                    continue
-                
+                # 獲取當前件標普通價格
                 current_price = self.data_original.iloc[original_idx]['close']
                 
-                future_data = self.data_original.iloc[original_idx+1:original_idx+1+lookforward]
-                if len(future_data) == 0:
+                # 檢查未來數據（向量化操作）
+                future_slice = self.data_original.iloc[original_idx+1:original_idx+1+lookforward]
+                if len(future_slice) == 0:
                     continue
                 
-                future_low = future_data['low'].min()
-                future_high = future_data['high'].max()
+                future_low = future_slice['low'].min()
+                future_high = future_slice['high'].max()
                 
+                # 判斷預測是否被觸發
                 buy_hit = future_low <= buy_pred
                 sell_hit = future_high >= sell_pred
                 
+                # 計算收益
                 if buy_hit and sell_hit:
                     profit = (sell_pred - buy_pred) / buy_pred * 100
                     status = 'SUCCESS'
@@ -354,11 +361,9 @@ print("-" * 60)
 
 handler = MLDataHandler()
 
-# 嘗試從 Hugging Face 加載
 if not handler.load_from_huggingface():
     handler.create_sample_data(n_samples=2000)
 
-# Keep reference to original data
 data_before_indicators = handler.data.copy()
 
 handler.calculate_indicators()
@@ -368,7 +373,6 @@ print("步驟 2: 準備 ML 數據")
 print("-" * 60)
 X, y_buy, y_sell, y_profit, feature_cols = handler.prepare_ml_data()
 
-# Split with index tracking
 X_train, X_test, y_buy_train, y_buy_test, train_idx, test_idx = train_test_split(
     X, y_buy, np.arange(len(X)), test_size=0.2, random_state=42
 )
@@ -388,7 +392,7 @@ print("步驟 4: 預測和回測")
 print("-" * 60 + "\n")
 
 engine = PredictionEngine(trainer, feature_cols, data_before_indicators, handler.data)
-backtest_df = engine.predict_and_backtest(X_test, (train_idx, test_idx))
+backtest_df = engine.predict_and_backtest_vectorized(X_test, (train_idx, test_idx))
 
 if len(backtest_df) > 0:
     print(f"✓ 完成 {len(backtest_df)} 個預測\n")
@@ -403,7 +407,7 @@ if len(backtest_df) > 0:
     failed = (backtest_df['status'] == 'FAILED').sum()
     total = len(backtest_df)
     
-    print(f"總交易次數: {total}")
+    print(f"總交易次数: {total}")
     print(f"成功交易: {success} ({success/total*100:.2f}%)")
     print(f"部分成功: {partial} ({partial/total*100:.2f}%)")
     print(f"失敗交易: {failed} ({failed/total*100:.2f}%)\n")
@@ -443,7 +447,7 @@ if len(backtest_df) > 0:
     ax2.hist(backtest_df['profit_pct'], bins=30, color='#3498db', edgecolor='black')
     ax2.axvline(backtest_df['profit_pct'].mean(), color='red', linestyle='--', linewidth=2, label='平均值')
     ax2.set_xlabel('收益率 (%)')
-    ax2.set_ylabel('交易次數')
+    ax2.set_ylabel('交易次数')
     ax2.set_title('收益率分布', fontweight='bold')
     ax2.legend()
     
